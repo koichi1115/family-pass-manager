@@ -1,0 +1,263 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+// 家族メンバー
+model FamilyMember {
+  id               String    @id @default(cuid())
+  name             String    @unique @db.VarChar(100) // father, mother, son, daughter, admin
+  role             Role
+  displayName      String    @map("display_name") @db.VarChar(100)
+  email            String?   @unique @db.VarChar(255)
+  certHash         String    @unique @map("cert_hash") @db.VarChar(255) // クライアント証明書のハッシュ値
+  certExpiresAt    DateTime? @map("cert_expires_at") // 証明書有効期限
+  preferences      Json?     // ユーザー設定（UI設定、通知設定等）
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  isActive         Boolean   @default(true) @map("is_active")
+  lastLoginAt      DateTime? @map("last_login_at")
+  loginCount       Int       @default(0) @map("login_count")
+
+  // リレーション
+  ownedPasswords   Password[]         @relation("PasswordOwner")
+  passwordHistories PasswordHistory[] @relation("PasswordChanger")
+  userSessions     UserSession[]
+  systemLogs       SystemLog[]
+  createdCategories Category[]        @relation("CategoryCreator")
+
+  @@map("family_members")
+  @@index([certHash])
+  @@index([role])
+  @@index([isActive])
+  @@index([lastLoginAt])
+}
+
+// 役割定義
+enum Role {
+  father
+  mother
+  son
+  daughter
+  admin
+
+  @@map("role")
+}
+
+// カテゴリ
+model Category {
+  id           String    @id @default(cuid())
+  name         String    @unique @db.VarChar(100) // banking, ecommerce, social, etc.
+  displayName  String    @map("display_name") @db.VarChar(100)
+  description  String?   @db.Text
+  color        String    @default("#1976d2") @db.VarChar(7) // HEX色
+  icon         String?   @db.VarChar(50) // Material-UI アイコン名
+  sortOrder    Int       @default(0) @map("sort_order")
+  isSystem     Boolean   @default(false) @map("is_system") // システム定義カテゴリ
+  createdBy    String?   @map("created_by")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  isActive     Boolean   @default(true) @map("is_active")
+
+  // リレーション
+  creator      FamilyMember?       @relation("CategoryCreator", fields: [createdBy], references: [id])
+  passwords    PasswordCategory[]
+
+  @@map("categories")
+  @@index([name])
+  @@index([sortOrder])
+  @@index([isActive])
+  @@index([isSystem])
+  @@index([createdBy])
+}
+
+// パスワード情報
+model Password {
+  id                String      @id @default(cuid())
+  ownerId           String      @map("owner_id")
+  serviceName       String      @map("service_name") @db.VarChar(200)
+  serviceUrl        String?     @map("service_url") @db.VarChar(500)
+  
+  // 暗号化されたデータ
+  encryptedData     String      @map("encrypted_data") @db.Text // AES暗号化されたパスワード情報JSON
+  salt              String      @db.VarChar(32) // 暗号化Salt
+  iv                String      @db.VarChar(32) // 暗号化IV
+  
+  // メタデータ
+  importance        Importance  @default(medium)
+  expiresAt         DateTime?   @map("expires_at") // パスワード有効期限
+  lastUsedAt        DateTime?   @map("last_used_at") // 最終使用日時
+  usageCount        Int         @default(0) @map("usage_count") // 使用回数
+  
+  // 共有設定
+  isShared          Boolean     @default(false) @map("is_shared") // 家族共有フラグ
+  sharedWith        Json?       @map("shared_with") // 共有対象メンバーID配列
+  
+  // システム情報
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+  isDeleted         Boolean     @default(false) @map("is_deleted")
+  deletedAt         DateTime?   @map("deleted_at")
+  deletedBy         String?     @map("deleted_by")
+
+  // リレーション
+  owner             FamilyMember       @relation("PasswordOwner", fields: [ownerId], references: [id])
+  categories        PasswordCategory[]
+  histories         PasswordHistory[]
+
+  @@map("passwords")
+  @@index([ownerId])
+  @@index([serviceName])
+  @@index([importance])
+  @@index([expiresAt])
+  @@index([isShared])
+  @@index([isDeleted])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@fulltext([serviceName, serviceUrl])
+}
+
+// 重要度定義
+enum Importance {
+  low
+  medium
+  high
+
+  @@map("importance")
+}
+
+// パスワード-カテゴリ関連
+model PasswordCategory {
+  passwordId   String   @map("password_id")
+  categoryId   String   @map("category_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // リレーション
+  password     Password @relation(fields: [passwordId], references: [id], onDelete: Cascade)
+  category     Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([passwordId, categoryId])
+  @@map("password_categories")
+  @@index([passwordId])
+  @@index([categoryId])
+}
+
+// パスワード変更履歴
+model PasswordHistory {
+  id              String      @id @default(cuid())
+  passwordId      String      @map("password_id")
+  changedBy       String      @map("changed_by")
+  
+  actionType      ActionType  @map("action_type")
+  changeReason    String?     @map("change_reason") @db.VarChar(500)
+  
+  // 変更前後のデータ（暗号化済み）
+  oldEncryptedData String?    @map("old_encrypted_data") @db.Text // 変更前の暗号化データ
+  newEncryptedData String?    @map("new_encrypted_data") @db.Text // 変更後の暗号化データ
+  oldSalt         String?     @map("old_salt") @db.VarChar(32)
+  newSalt         String?     @map("new_salt") @db.VarChar(32)
+  oldIv           String?     @map("old_iv") @db.VarChar(32)
+  newIv           String?     @map("new_iv") @db.VarChar(32)
+  
+  // 変更項目の概要（検索用）
+  changedFields   Json?       @map("changed_fields") // 変更されたフィールド一覧
+  
+  changedAt       DateTime    @default(now()) @map("changed_at")
+
+  // リレーション
+  password        Password     @relation(fields: [passwordId], references: [id], onDelete: Cascade)
+  changedByUser   FamilyMember @relation("PasswordChanger", fields: [changedBy], references: [id])
+
+  @@map("password_history")
+  @@index([passwordId])
+  @@index([changedBy])
+  @@index([actionType])
+  @@index([changedAt])
+}
+
+// アクション種別定義
+enum ActionType {
+  create
+  update
+  delete
+  restore
+
+  @@map("action_type")
+}
+
+// ユーザーセッション
+model UserSession {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  sessionToken    String    @unique @map("session_token") @db.VarChar(255)
+  certFingerprint String    @map("cert_fingerprint") @db.VarChar(255) // クライアント証明書フィンガープリント
+  
+  // セッション情報
+  ipAddress       String?   @map("ip_address") @db.VarChar(45)
+  userAgent       String?   @map("user_agent") @db.Text
+  deviceInfo      Json?     @map("device_info") // デバイス情報
+  
+  // セッション状態
+  createdAt       DateTime  @default(now()) @map("created_at")
+  lastAccessedAt  DateTime  @default(now()) @map("last_accessed_at")
+  expiresAt       DateTime  @map("expires_at")
+  isActive        Boolean   @default(true) @map("is_active")
+
+  // リレーション
+  user            FamilyMember @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+  @@index([userId])
+  @@index([sessionToken])
+  @@index([certFingerprint])
+  @@index([expiresAt])
+  @@index([isActive])
+}
+
+// システムログ
+model SystemLog {
+  id          String      @id @default(cuid())
+  userId      String?     @map("user_id")
+  
+  logLevel    LogLevel    @map("log_level")
+  eventType   String      @map("event_type") @db.VarChar(100) // ログイベント種別
+  message     String      @db.Text
+  details     Json?       // 詳細情報
+  
+  // トレーシング情報
+  requestId   String?     @map("request_id") @db.VarChar(36)
+  sessionId   String?     @map("session_id") @db.VarChar(255)
+  ipAddress   String?     @map("ip_address") @db.VarChar(45)
+  userAgent   String?     @map("user_agent") @db.Text
+  
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  // リレーション
+  user        FamilyMember? @relation(fields: [userId], references: [id])
+
+  @@map("system_logs")
+  @@index([userId])
+  @@index([logLevel])
+  @@index([eventType])
+  @@index([createdAt])
+  @@index([requestId])
+}
+
+// ログレベル定義
+enum LogLevel {
+  debug
+  info
+  warn
+  error
+  fatal
+
+  @@map("log_level")
+}

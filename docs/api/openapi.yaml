@@ -1,0 +1,1016 @@
+openapi: 3.0.3
+info:
+  title: 家族用パスワード管理システム API
+  description: |
+    家族内で安全にID・パスワード情報を共有・管理するためのWebアプリケーションAPI
+    
+    ## 認証
+    - クライアント証明書による認証
+    - セッショントークンによる認可
+    - マスターパスワードによる暗号化キー生成
+    
+    ## セキュリティ
+    - すべてのパスワードデータはクライアントサイドで暗号化
+    - Zero-Knowledge Architecture
+    - レート制限・ブルートフォース対策
+    
+  version: 1.0.0
+  contact:
+    name: Family Password Manager
+    email: support@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://family-pass.example.com/api
+    description: 本番環境
+  - url: https://staging.family-pass.example.com/api
+    description: ステージング環境
+  - url: http://localhost:3000/api
+    description: 開発環境
+
+security:
+  - BearerAuth: []
+  - ClientCertAuth: []
+
+paths:
+  # 認証関連
+  /auth/session:
+    post:
+      tags:
+        - Authentication
+      summary: セッション作成
+      description: クライアント証明書を検証し、新しいセッションを作成
+      security:
+        - ClientCertAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                device_info:
+                  $ref: '#/components/schemas/DeviceInfo'
+      responses:
+        '200':
+          description: セッション作成成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionData'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+    
+    get:
+      tags:
+        - Authentication
+      summary: セッション検証
+      description: 現在のセッションの有効性を確認
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      responses:
+        '200':
+          description: セッション有効
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UserSession'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    
+    delete:
+      tags:
+        - Authentication
+      summary: ログアウト
+      description: 現在のセッションを無効化
+      security:
+        - BearerAuth: []
+      responses:
+        '204':
+          description: ログアウト成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/master-password:
+    post:
+      tags:
+        - Authentication
+      summary: マスターパスワード検証
+      description: マスターパスワードを検証し、暗号化キー生成用のソルトを返す
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - master_password_hash
+              properties:
+                master_password_hash:
+                  type: string
+                  description: クライアントサイドでハッシュ化されたマスターパスワード
+                  example: "pbkdf2_sha256$100000$salt$hash"
+      responses:
+        '200':
+          description: マスターパスワード検証成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MasterPasswordVerification'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # パスワード管理
+  /passwords:
+    get:
+      tags:
+        - Passwords
+      summary: パスワード一覧取得
+      description: 認証されたユーザーがアクセス可能なパスワード情報の一覧を取得
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Sort'
+        - $ref: '#/components/parameters/Order'
+        - name: search
+          in: query
+          description: フリーワード検索
+          schema:
+            type: string
+            example: "銀行"
+        - name: category
+          in: query
+          description: カテゴリフィルター
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - name: owner
+          in: query
+          description: 所有者フィルター
+          schema:
+            type: string
+            example: "father"
+        - name: shared
+          in: query
+          description: 共有パスワードのみ
+          schema:
+            type: boolean
+        - name: importance
+          in: query
+          description: 重要度フィルター
+          schema:
+            $ref: '#/components/schemas/ImportanceLevel'
+      responses:
+        '200':
+          description: パスワード一覧取得成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PasswordEntry'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    post:
+      tags:
+        - Passwords
+      summary: パスワード作成
+      description: 新しいパスワード情報を作成
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePasswordRequest'
+      responses:
+        '201':
+          description: パスワード作成成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PasswordEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /passwords/{id}:
+    get:
+      tags:
+        - Passwords
+      summary: パスワード詳細取得
+      description: 指定されたパスワード情報の詳細を取得
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: パスワードID
+          schema:
+            type: string
+            example: "pwd_abc123"
+      responses:
+        '200':
+          description: パスワード詳細取得成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PasswordDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags:
+        - Passwords
+      summary: パスワード更新
+      description: 既存のパスワード情報を更新
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: パスワードID
+          schema:
+            type: string
+            example: "pwd_abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePasswordRequest'
+      responses:
+        '200':
+          description: パスワード更新成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PasswordEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+    delete:
+      tags:
+        - Passwords
+      summary: パスワード削除
+      description: パスワード情報を削除（論理削除）
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: パスワードID
+          schema:
+            type: string
+            example: "pwd_abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - delete_reason
+              properties:
+                delete_reason:
+                  type: string
+                  description: 削除理由
+                  example: "サービス解約のため"
+      responses:
+        '204':
+          description: パスワード削除成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /passwords/{id}/history:
+    get:
+      tags:
+        - History
+      summary: 変更履歴取得
+      description: 指定されたパスワードの変更履歴を取得
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: パスワードID
+          schema:
+            type: string
+            example: "pwd_abc123"
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: 変更履歴取得成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PasswordHistory'
+                      meta:
+                        $ref: '#/components/schemas/PaginationMeta'
+
+  /passwords/{id}/restore:
+    post:
+      tags:
+        - History
+      summary: 履歴復元
+      description: 指定された履歴バージョンに復元
+      security:
+        - BearerAuth: []
+        - ClientCertAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: パスワードID
+          schema:
+            type: string
+            example: "pwd_abc123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - history_id
+                - restore_reason
+              properties:
+                history_id:
+                  type: string
+                  description: 復元する履歴ID
+                restore_reason:
+                  type: string
+                  description: 復元理由
+      responses:
+        '200':
+          description: 履歴復元成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PasswordEntry'
+
+  # カテゴリ管理
+  /categories:
+    get:
+      tags:
+        - Categories
+      summary: カテゴリ一覧取得
+      description: 利用可能なカテゴリの一覧を取得
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: カテゴリ一覧取得成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Category'
+
+  # システム管理
+  /system/health:
+    get:
+      tags:
+        - System
+      summary: ヘルスチェック
+      description: システムの稼働状況を確認
+      responses:
+        '200':
+          description: システム正常
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  timestamp:
+                    type: string
+                    format: date-time
+                  version:
+                    type: string
+                    example: "1.0.0"
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: セッショントークンによる認証
+    ClientCertAuth:
+      type: apiKey
+      in: header
+      name: X-Client-Cert
+      description: クライアント証明書による認証
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      description: ページ番号
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Limit:
+      name: limit
+      in: query
+      description: 1ページあたりの件数
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Sort:
+      name: sort
+      in: query
+      description: ソートフィールド
+      schema:
+        type: string
+        enum: [service_name, updated_at, created_at, importance, expires_at]
+        default: updated_at
+    Order:
+      name: order
+      in: query
+      description: ソート順序
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: desc
+
+  schemas:
+    # 共通スキーマ
+    SuccessResponse:
+      type: object
+      required:
+        - success
+        - timestamp
+        - request_id
+      properties:
+        success:
+          type: boolean
+          example: true
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-06-23T12:00:00Z"
+        request_id:
+          type: string
+          example: "req_abc123"
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+        - timestamp
+        - request_id
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+        timestamp:
+          type: string
+          format: date-time
+          example: "2024-06-23T12:00:00Z"
+        request_id:
+          type: string
+          example: "req_abc123"
+
+    ErrorDetail:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: "AUTH_CERT_INVALID"
+        message:
+          type: string
+          example: "クライアント証明書が無効です"
+        details:
+          type: object
+          additionalProperties: true
+        field:
+          type: string
+          description: バリデーションエラー時のフィールド名
+
+    PaginationMeta:
+      type: object
+      properties:
+        total:
+          type: integer
+          example: 45
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 20
+        total_pages:
+          type: integer
+          example: 3
+        has_next:
+          type: boolean
+          example: true
+        has_prev:
+          type: boolean
+          example: false
+
+    # 認証関連
+    DeviceInfo:
+      type: object
+      properties:
+        user_agent:
+          type: string
+          example: "Mozilla/5.0..."
+        platform:
+          type: string
+          example: "iPhone"
+        app_version:
+          type: string
+          example: "1.0.0"
+
+    SessionData:
+      type: object
+      properties:
+        session_token:
+          type: string
+          example: "sess_abc123..."
+        expires_at:
+          type: string
+          format: date-time
+        user:
+          $ref: '#/components/schemas/User'
+        certificate:
+          $ref: '#/components/schemas/Certificate'
+
+    UserSession:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        session:
+          type: object
+          properties:
+            created_at:
+              type: string
+              format: date-time
+            last_accessed_at:
+              type: string
+              format: date-time
+            expires_at:
+              type: string
+              format: date-time
+        permissions:
+          type: array
+          items:
+            type: string
+          example: ["password:read", "password:write", "history:read"]
+
+    MasterPasswordVerification:
+      type: object
+      properties:
+        verified:
+          type: boolean
+          example: true
+        encryption_salt:
+          type: string
+          example: "random_salt_for_encryption"
+        key_derivation_params:
+          type: object
+          properties:
+            algorithm:
+              type: string
+              example: "PBKDF2"
+            hash:
+              type: string
+              example: "SHA-256"
+            iterations:
+              type: integer
+              example: 100000
+            salt_length:
+              type: integer
+              example: 32
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "user-123"
+        name:
+          type: string
+          example: "father"
+        display_name:
+          type: string
+          example: "お父さん"
+        role:
+          type: string
+          enum: [father, mother, son, daughter, admin]
+        preferences:
+          type: object
+          additionalProperties: true
+
+    Certificate:
+      type: object
+      properties:
+        fingerprint:
+          type: string
+          example: "aa:bb:cc:dd..."
+        expires_at:
+          type: string
+          format: date-time
+        serial_number:
+          type: string
+          example: "1234567890"
+
+    # パスワード関連
+    ImportanceLevel:
+      type: string
+      enum: [low, medium, high]
+      example: "high"
+
+    PasswordEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "pwd_abc123"
+        service_name:
+          type: string
+          example: "みずほ銀行"
+        service_url:
+          type: string
+          format: uri
+          example: "https://www.mizuhobank.co.jp/"
+        owner:
+          $ref: '#/components/schemas/User'
+        categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/Category'
+        importance:
+          $ref: '#/components/schemas/ImportanceLevel'
+        is_shared:
+          type: boolean
+          example: false
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        usage_count:
+          type: integer
+          example: 15
+        has_additional_fields:
+          type: boolean
+          example: true
+        encrypted_data:
+          type: string
+          description: AES暗号化されたパスワードデータ
+        salt:
+          type: string
+          description: 暗号化用ソルト
+        iv:
+          type: string
+          description: 暗号化用IV
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PasswordDetail:
+      allOf:
+        - $ref: '#/components/schemas/PasswordEntry'
+        - type: object
+          properties:
+            access_history:
+              type: array
+              items:
+                type: object
+                properties:
+                  accessed_at:
+                    type: string
+                    format: date-time
+                  accessed_by:
+                    $ref: '#/components/schemas/User'
+                  action:
+                    type: string
+                    example: "view"
+
+    CreatePasswordRequest:
+      type: object
+      required:
+        - service_name
+        - encrypted_data
+        - salt
+        - iv
+      properties:
+        service_name:
+          type: string
+          maxLength: 200
+          example: "楽天銀行"
+        service_url:
+          type: string
+          format: uri
+          example: "https://www.rakuten-bank.co.jp/"
+        encrypted_data:
+          type: string
+          description: 暗号化されたパスワードデータ
+        salt:
+          type: string
+          minLength: 32
+          maxLength: 32
+          description: 暗号化用ソルト
+        iv:
+          type: string
+          minLength: 32
+          maxLength: 32
+          description: 暗号化用IV
+        categories:
+          type: array
+          items:
+            type: string
+            format: uuid
+        importance:
+          $ref: '#/components/schemas/ImportanceLevel'
+        expires_at:
+          type: string
+          format: date-time
+        is_shared:
+          type: boolean
+          default: false
+        shared_with:
+          type: array
+          items:
+            type: string
+            format: uuid
+        notes:
+          type: string
+          maxLength: 1000
+
+    UpdatePasswordRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreatePasswordRequest'
+        - type: object
+          required:
+            - change_reason
+          properties:
+            change_reason:
+              type: string
+              maxLength: 500
+              description: 変更理由
+
+    PasswordHistory:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "hist_abc123"
+        password_id:
+          type: string
+          example: "pwd_abc123"
+        changed_by:
+          $ref: '#/components/schemas/User'
+        action_type:
+          type: string
+          enum: [create, update, delete, restore]
+        change_reason:
+          type: string
+          example: "パスワード変更のため"
+        changed_fields:
+          type: array
+          items:
+            type: string
+          example: ["password", "expires_at"]
+        changed_at:
+          type: string
+          format: date-time
+
+    Category:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "cat-banking"
+        name:
+          type: string
+          example: "banking"
+        display_name:
+          type: string
+          example: "銀行・金融"
+        description:
+          type: string
+          example: "銀行・金融機関のパスワード"
+        color:
+          type: string
+          example: "#1976d2"
+        icon:
+          type: string
+          example: "AccountBalance"
+        is_system:
+          type: boolean
+          example: true
+        created_at:
+          type: string
+          format: date-time
+
+  responses:
+    BadRequest:
+      description: リクエストエラー
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: "BAD_REQUEST"
+              message: "リクエストが正しくありません"
+
+    Unauthorized:
+      description: 認証エラー
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: "AUTH_CERT_INVALID"
+              message: "クライアント証明書が無効です"
+
+    Forbidden:
+      description: 認可エラー
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: "BUSINESS_ACCESS_DENIED"
+              message: "この操作の権限がありません"
+
+    NotFound:
+      description: リソース未発見
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: "PASSWORD_NOT_FOUND"
+              message: "指定されたパスワード情報が見つかりません"
+
+    ValidationError:
+      description: バリデーションエラー
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: "VALIDATION_REQUIRED"
+              message: "必須項目が入力されていません"
+              field: "service_name"
+
+    RateLimited:
+      description: レート制限
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: "AUTH_RATE_LIMIT_EXCEEDED"
+              message: "認証試行回数の上限に達しました"
+              details:
+                retry_after: 900
+
+tags:
+  - name: Authentication
+    description: 認証・セッション管理
+  - name: Passwords
+    description: パスワード情報の管理
+  - name: History
+    description: 変更履歴の管理
+  - name: Categories
+    description: カテゴリ管理
+  - name: System
+    description: システム管理・監視
